@@ -2,7 +2,7 @@
 #
 # KreaOS installer - an Arch Linux base for creative work.
 #
-#   Desktop : Window Maker (X11) + LightDM + Kando pie menu
+#   Desktop : Openbox + tint2 panel (X11) + LightDM + Kando pie menu
 #   Creative: Inkscape, Scribus, Blender, Darktable, MyPaint, AzPainter, GIMP,
 #             MakeHuman, Kdenlive, OpenShot, Synfig Studio, SculptGL
 #   Extras  : Firefox, LibreOffice, VLC, Shotwell, Evince, SimpleScreenRecorder,
@@ -88,11 +88,12 @@ ask XLAYOUT "X11 keyboard layout (e.g. gb, us, fr)" "gb"
 ### ------------------------------------------------------------------
 ### HARDWARE DETECTION
 ### ------------------------------------------------------------------
-GPU_INFO=$(lspci 2>/dev/null | grep -Ei 'vga|3d controller|display controller' || true)
+# Match on PCI vendor IDs, not names ("compatible" contains "ati"!).
+GPU_INFO=$(lspci -nn 2>/dev/null | grep -Ei 'vga|3d controller|display controller' || true)
 HAS_INTEL=0; HAS_AMD=0; HAS_NVIDIA=0
-grep -qi 'intel'        <<<"$GPU_INFO" && HAS_INTEL=1  || true
-grep -qiE 'amd|ati|radeon' <<<"$GPU_INFO" && HAS_AMD=1 || true
-grep -qi 'nvidia'       <<<"$GPU_INFO" && HAS_NVIDIA=1 || true
+grep -qi '\[8086:' <<<"$GPU_INFO" && HAS_INTEL=1  || true
+grep -qi '\[1002:' <<<"$GPU_INFO" && HAS_AMD=1    || true
+grep -qi '\[10de:' <<<"$GPU_INFO" && HAS_NVIDIA=1 || true
 
 UCODE=""
 if   grep -q GenuineIntel /proc/cpuinfo; then UCODE="intel-ucode"
@@ -357,12 +358,15 @@ case "$VIRT" in
         ;;
 esac
 
-### --- XORG + WINDOW MAKER DESKTOP ---
+### --- XORG + OPENBOX DESKTOP ---
+# python-pyxdg is deliberately NOT installed: without it Openbox does not run
+# XDG autostart entries, so ~/.config/openbox/autostart is the single list of
+# what starts (no duplicate applets).
 pkg_install \
     xorg-server xorg-xinit xorg-xrandr xorg-xsetroot xorg-xset xorg-xrdb \
     xf86-input-libinput xf86-input-wacom libwacom \
     xdg-utils xdg-user-dirs \
-    windowmaker \
+    openbox obconf-qt tint2 feh \
     picom dunst arandr \
     polkit-gnome \
     lightdm lightdm-gtk-greeter \
@@ -573,11 +577,11 @@ fi
 ### --- LOGIN SCREEN + SESSION ---
 cat <<'XSESSION' > /usr/share/xsessions/kreaos.desktop
 [Desktop Entry]
-Name=KreaOS (Window Maker)
-Comment=Window Maker with the Kando pie menu
-Exec=wmaker
+Name=KreaOS
+Comment=Openbox with the Kando pie menu
+Exec=openbox-session
 Type=Application
-DesktopNames=WindowMaker
+DesktopNames=Openbox
 XSESSION
 
 mkdir -p /etc/lightdm/lightdm.conf.d
@@ -587,30 +591,46 @@ greeter-session=lightdm-gtk-greeter
 user-session=kreaos
 LIGHTDM
 
-### --- WINDOW MAKER: AUTOSTART + STARTX FALLBACK ---
-WM_DIR="/home/$KREA_USER/GNUstep/Library/WindowMaker"
-mkdir -p "$WM_DIR"
-cat <<'AUTOSTART' > "$WM_DIR/autostart"
-#!/bin/sh
-# Runs once when Window Maker starts.
+### --- OPENBOX: CONFIG, AUTOSTART + STARTX FALLBACK ---
+OB_DIR="/home/$KREA_USER/.config/openbox"
+mkdir -p "$OB_DIR"
+cp /etc/xdg/openbox/rc.xml /etc/xdg/openbox/menu.xml "$OB_DIR/"
+
+cat <<'AUTOSTART' > "$OB_DIR/autostart"
+# KreaOS - Openbox autostart (one command per line, background with &)
 
 # Password prompts for GParted, GNOME Disks, etc.
 /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 &
 
-# Compositor: Kando needs one for its transparency.
+# Compositor (Kando needs it for transparency), notifications, USB automount.
 picom -b
-
-# Notifications and automatic mounting of USB drives.
 dunst &
 udiskie &
+
+# Panel with system tray, then the tray applets.
+tint2 &
+nm-applet &
+blueman-applet &
+
+# Wallpaper (uncomment and point at an image).
+# feh --bg-fill ~/Pictures/wallpaper.jpg &
 
 # Pie menu (Ctrl+Space by default).
 kando &
 AUTOSTART
-chmod 755 "$WM_DIR/autostart"
 
-echo 'exec dbus-run-session wmaker' > "/home/$KREA_USER/.xinitrc"
-chown -R "$KREA_USER:$KREA_USER" "/home/$KREA_USER/GNUstep" "/home/$KREA_USER/.xinitrc"
+# Virtual machine guest tools. Without these the screen never resizes and big
+# windows can end up off-screen.
+case "$VIRT" in
+    oracle|virtualbox) echo 'VBoxClient-all &' >> "$OB_DIR/autostart" ;;
+    kvm|qemu)          echo 'spice-vdagent &'   >> "$OB_DIR/autostart" ;;
+esac
+
+# Kando's example menu launches "x-terminal-emulator" (a Debian-ism); point it at a real terminal.
+ln -sf /usr/bin/xfce4-terminal /usr/local/bin/x-terminal-emulator
+
+echo 'exec dbus-run-session openbox-session' > "/home/$KREA_USER/.xinitrc"
+chown -R "$KREA_USER:$KREA_USER" "/home/$KREA_USER/.config" "/home/$KREA_USER/.xinitrc"
 
 sudo -u "$KREA_USER" -H xdg-user-dirs-update || true
 
